@@ -24,8 +24,6 @@ async def setup_bot_commands(bot: Bot) -> None:
             BotCommand(command='profile', description='Профиль персонажа'),
             BotCommand(command='inventory', description='Инвентарь'),
             BotCommand(command='shop', description='Магазин'),
-            BotCommand(command='transfer', description='Передать монеты или предмет'),
-            BotCommand(command='levels', description='Таблица уровней DnD'),
             BotCommand(command='admin', description='Админ-панель'),
             BotCommand(command='cancel', description='Отменить действие'),
         ]

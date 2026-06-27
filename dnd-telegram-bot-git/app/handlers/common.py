@@ -8,7 +8,6 @@ from aiogram.types import CallbackQuery, Message
 from app.config import Settings
 from app.database import Database
 from app.keyboards import main_menu
-from app.levels import level_progress_text
 from app.states import LoginState
 from app.ui import edit_or_answer
 
@@ -84,8 +83,8 @@ async def password_entered(message: Message, state: FSMContext, db: Database, se
         return
 
     await message.answer(
-        f'Готово! Ты вошёл как <b>{character["display_name"]}</b>.\n\n'
-        f'{level_progress_text(character)}\n'
+        f'Готово! Ты вошёл как <b>{character["display_name"]}</b>.\n'
+        f'XP: <b>{character["xp"]}</b>\n'
         f'Монеты: <b>{character["gold"]}</b> 🪙',
         reply_markup=main_menu(is_admin(message.from_user.id, settings)),
     )
