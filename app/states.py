@@ -15,11 +15,17 @@ class CreateCharacterState(StatesGroup):
 class CreateItemState(StatesGroup):
     name = State()
     description = State()
+    category = State()
     price = State()
     rarity = State()
     loot_chance = State()
     availability = State()
     shop_quantity = State()
+    photo = State()
+
+
+class EditItemState(StatesGroup):
+    value = State()
     photo = State()
 
 
@@ -33,7 +39,6 @@ class GiveItemState(StatesGroup):
 
 class SetItemStockState(StatesGroup):
     quantity = State()
-
 
 
 class TransferGoldState(StatesGroup):

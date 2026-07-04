@@ -8,6 +8,8 @@ from aiogram.types import CallbackQuery, Message
 from app.database import Database
 from app.keyboards import (
     back_to_main_menu,
+    categories_keyboard,
+    category_label,
     characters_select_keyboard,
     inventory_item_keyboard,
     item_details_keyboard,
@@ -31,6 +33,7 @@ def item_text(item: dict, quantity: int | None = None) -> str:
     return (
         f'<b>{item["name"]}</b>\n'
         f'{qty_line}'
+        f'Категория: <b>{category_label(item.get("category"))}</b>\n'
         f'Редкость: <b>{item["rarity"]}</b>\n'
         f'Цена: <b>{item["price"]}</b> 🪙\n'
         f'{availability}\n\n'
@@ -262,7 +265,7 @@ async def inventory_callback(callback: CallbackQuery, db: Database) -> None:
         await callback.answer()
         return
     text = '🎒 <b>Инвентарь</b>\n\n' + '\n'.join(
-        f'• <b>{item["name"]}</b> ×{item["quantity"]} — {item["rarity"]}, продать за {item["price"]} 🪙'
+        f'• {category_label(item.get("category"))} | <b>{item["name"]}</b> ×{item["quantity"]} — {item["rarity"]}, продать за {item["price"]} 🪙'
         for item in inventory
     )
     await edit_or_answer(callback.message, text, reply_markup=items_keyboard(inventory, 'inventory:item', 'menu:main'))
@@ -275,7 +278,7 @@ async def send_inventory(message: Message, db: Database, character: dict) -> Non
         await message.answer('🎒 Инвентарь пуст.', reply_markup=back_to_main_menu())
         return
     text = '🎒 <b>Инвентарь</b>\n\n' + '\n'.join(
-        f'• <b>{item["name"]}</b> ×{item["quantity"]} — {item["rarity"]}, продать за {item["price"]} 🪙'
+        f'• {category_label(item.get("category"))} | <b>{item["name"]}</b> ×{item["quantity"]} — {item["rarity"]}, продать за {item["price"]} 🪙'
         for item in inventory
     )
     await message.answer(text, reply_markup=items_keyboard(inventory, 'inventory:item', 'menu:main'))
@@ -325,29 +328,58 @@ async def shop_command(message: Message, db: Database) -> None:
     await send_shop(message, db)
 
 
+async def shop_header(db: Database, telegram_id: int | None = None, category: str | None = None) -> str:
+    character = await db.get_character_by_telegram_id(telegram_id) if telegram_id else None
+    balance_line = f'Твои монеты: <b>{character["gold"]}</b> 🪙\n' if character else ''
+    category_line = '' if not category or category == 'all' else f'Категория: <b>{category_label(category)}</b>\n'
+    return (
+        '🛒 <b>Магазин</b>\n'
+        f'{balance_line}'
+        f'{category_line}'
+        '\nВ магазине показаны только предметы, которые сейчас можно купить.'
+    )
+
+
 @router.callback_query(F.data == 'shop:list')
 async def shop_callback(callback: CallbackQuery, db: Database) -> None:
-    items = await db.list_items(only_active=True)
-    if not items:
-        await edit_or_answer(callback.message, '🛒 Магазин пока пуст.', reply_markup=back_to_main_menu())
+    categories = await db.list_item_categories(only_active=True, only_purchasable=True)
+    if not categories:
+        await edit_or_answer(callback.message, '🛒 Магазин пока пуст или все предметы закончились.', reply_markup=back_to_main_menu())
         await callback.answer()
         return
     await edit_or_answer(
         callback.message,
-        '🛒 <b>Магазин</b>\nВыбери предмет, чтобы посмотреть описание, картинку и остаток:',
-        reply_markup=items_keyboard(items, 'shop:item', 'menu:main'),
+        await shop_header(db, callback.from_user.id),
+        reply_markup=categories_keyboard(categories, 'shop:category', 'menu:main'),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('shop:category:'))
+async def shop_category_callback(callback: CallbackQuery, db: Database) -> None:
+    category = callback.data.split(':', 2)[2]
+    selected_category = None if category == 'all' else category
+    items = await db.list_items(only_active=True, category=selected_category, only_purchasable=True)
+    if not items:
+        await edit_or_answer(callback.message, 'В этой категории сейчас нет предметов, которые можно купить.', reply_markup=back_to_main_menu())
+        await callback.answer()
+        return
+    await edit_or_answer(
+        callback.message,
+        await shop_header(db, callback.from_user.id, category),
+        reply_markup=items_keyboard(items, 'shop:item', 'shop:list'),
     )
     await callback.answer()
 
 
 async def send_shop(message: Message, db: Database) -> None:
-    items = await db.list_items(only_active=True)
-    if not items:
-        await message.answer('🛒 Магазин пока пуст.', reply_markup=back_to_main_menu())
+    categories = await db.list_item_categories(only_active=True, only_purchasable=True)
+    if not categories:
+        await message.answer('🛒 Магазин пока пуст или все предметы закончились.', reply_markup=back_to_main_menu())
         return
     await message.answer(
-        '🛒 <b>Магазин</b>\nВыбери предмет, чтобы посмотреть описание, картинку и остаток:',
-        reply_markup=items_keyboard(items, 'shop:item', 'menu:main'),
+        await shop_header(db, message.from_user.id),
+        reply_markup=categories_keyboard(categories, 'shop:category', 'menu:main'),
     )
 
 
@@ -355,19 +387,18 @@ async def send_shop(message: Message, db: Database) -> None:
 async def shop_item_callback(callback: CallbackQuery, db: Database) -> None:
     item_id = int(callback.data.split(':')[2])
     item = await db.get_item(item_id)
-    if item is None or not item['is_active']:
-        await callback.answer('Предмет не найден.', show_alert=True)
+    if item is None or not item['is_active'] or int(item.get('shop_quantity', -1)) == 0:
+        await callback.answer('Предмет не найден или сейчас недоступен для покупки.', show_alert=True)
         return
     text = item_text(item)
-    can_buy = int(item.get('shop_quantity', -1)) != 0
     if item.get('image_file_id'):
         await callback.message.answer_photo(
             item['image_file_id'],
             caption=text,
-            reply_markup=item_details_keyboard(item_id, can_buy=can_buy),
+            reply_markup=item_details_keyboard(item_id, can_buy=True),
         )
     else:
-        await callback.message.answer(text, reply_markup=item_details_keyboard(item_id, can_buy=can_buy))
+        await callback.message.answer(text, reply_markup=item_details_keyboard(item_id, can_buy=True))
     await callback.answer()
 
 

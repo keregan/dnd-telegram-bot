@@ -19,25 +19,46 @@ def is_admin(user_id: int | None, settings: Settings) -> bool:
     return user_id in settings.admin_ids if user_id is not None else False
 
 
+def main_menu_text(character: dict | None, settings: Settings) -> str:
+    if character is None:
+        return (
+            f'Привет! Это бот кампании <b>{settings.campaign_name}</b>.\n\n'
+            'Здесь можно смотреть профиль, опыт, монеты, инвентарь и покупать предметы в магазине.\n\n'
+            'Если у тебя уже есть логин и пароль от мастера — нажми «Войти».'
+        )
+    return (
+        f'🎲 <b>{settings.campaign_name}</b>\n\n'
+        f'Ты вошёл как <b>{character["display_name"]}</b>.\n'
+        f'Монеты: <b>{character["gold"]}</b> 🪙\n'
+        f'{level_progress_text(character)}\n\n'
+        'Выбери действие:'
+    )
+
+
 @router.message(CommandStart())
-async def start(message: Message, settings: Settings) -> None:
+async def start(message: Message, db: Database, settings: Settings) -> None:
+    character = await db.get_character_by_telegram_id(message.from_user.id)
     await message.answer(
-        f'Привет! Это бот кампании <b>{settings.campaign_name}</b>.\n\n'
-        'Здесь можно смотреть профиль, опыт, монеты, инвентарь и покупать предметы в магазине.\n\n'
-        'Если у тебя уже есть логин и пароль от мастера — нажми «Войти».',
+        main_menu_text(character, settings),
         reply_markup=main_menu(is_admin(message.from_user.id, settings)),
     )
 
 
 @router.message(Command('menu'))
-async def menu_command(message: Message, settings: Settings) -> None:
-    await message.answer('Главное меню:', reply_markup=main_menu(is_admin(message.from_user.id, settings)))
+async def menu_command(message: Message, db: Database, settings: Settings) -> None:
+    character = await db.get_character_by_telegram_id(message.from_user.id)
+    await message.answer(
+        main_menu_text(character, settings),
+        reply_markup=main_menu(is_admin(message.from_user.id, settings)),
+    )
 
 
 @router.callback_query(F.data == 'menu:main')
-async def menu_callback(callback: CallbackQuery, settings: Settings) -> None:
-    await edit_or_answer(callback.message, 
-        'Главное меню:',
+async def menu_callback(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    character = await db.get_character_by_telegram_id(callback.from_user.id)
+    await edit_or_answer(
+        callback.message,
+        main_menu_text(character, settings),
         reply_markup=main_menu(is_admin(callback.from_user.id, settings)),
     )
     await callback.answer()
@@ -85,8 +106,8 @@ async def password_entered(message: Message, state: FSMContext, db: Database, se
 
     await message.answer(
         f'Готово! Ты вошёл как <b>{character["display_name"]}</b>.\n\n'
-        f'{level_progress_text(character)}\n'
-        f'Монеты: <b>{character["gold"]}</b> 🪙',
+        f'Монеты: <b>{character["gold"]}</b> 🪙\n'
+        f'{level_progress_text(character)}',
         reply_markup=main_menu(is_admin(message.from_user.id, settings)),
     )
 

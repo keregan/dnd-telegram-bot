@@ -12,6 +12,27 @@ RARITIES = [
     ('Легендарный', 'legendary'),
 ]
 
+CATEGORIES = [
+    ('⚔️ Оружие', 'weapon'),
+    ('🛡️ Броня', 'armor'),
+    ('🍖 Еда', 'food'),
+    ('🍺 Питьё', 'drink'),
+    ('✨ Магия', 'magic'),
+    ('🧰 Инструменты', 'tools'),
+    ('🧪 Расходники', 'consumable'),
+    ('🎒 Снаряжение', 'gear'),
+    ('📦 Другое', 'other'),
+]
+
+CATEGORY_TITLES = {value: title for title, value in CATEGORIES}
+CATEGORY_ORDER = {value: index for index, (_, value) in enumerate(CATEGORIES)}
+
+
+def category_label(category: str | None) -> str:
+    if not category:
+        return CATEGORY_TITLES['other']
+    return CATEGORY_TITLES.get(str(category), str(category))
+
 
 def stock_label(item: dict) -> str:
     quantity = int(item.get('shop_quantity', -1))
@@ -84,13 +105,38 @@ def items_keyboard(items: list[dict], action: str, back_callback: str = 'menu:ma
         active_mark = '' if item.get('is_active', 1) else '🚫 '
         quantity_text = f' ×{item["quantity"]}' if 'quantity' in item else ''
         stock_text = f' | {stock_label(item)}' if 'shop_quantity' in item else ''
+        category_text = f'{category_label(item.get("category"))} | ' if 'category' in item else ''
         builder.button(
-            text=f'{active_mark}{item["name"]}{quantity_text} — {item["price"]} 🪙{stock_text}',
+            text=f'{active_mark}{category_text}{item["name"]}{quantity_text} — {item["price"]} 🪙{stock_text}',
             callback_data=f'{action}:{item["id"]}',
         )
     builder.button(text='⬅️ Назад', callback_data=back_callback)
     builder.adjust(1)
     return builder.as_markup()
+
+
+def categories_keyboard(
+    categories: list[str],
+    action: str,
+    back_callback: str = 'menu:main',
+    include_all: bool = True,
+) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    if include_all:
+        builder.button(text='📚 Все категории', callback_data=f'{action}:all')
+    ordered = sorted(
+        {category or 'other' for category in categories},
+        key=lambda value: (CATEGORY_ORDER.get(value, 999), category_label(value).lower()),
+    )
+    for category in ordered:
+        builder.button(text=category_label(category), callback_data=f'{action}:{category}')
+    builder.button(text='⬅️ Назад', callback_data=back_callback)
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def item_category_keyboard(action: str, back_callback: str = 'admin:menu') -> InlineKeyboardMarkup:
+    return categories_keyboard([value for _, value in CATEGORIES], action, back_callback, include_all=False)
 
 
 def item_details_keyboard(item_id: int, can_buy: bool = True) -> InlineKeyboardMarkup:
@@ -121,10 +167,25 @@ def admin_item_manage_keyboard(item: dict) -> InlineKeyboardMarkup:
         builder.button(text='🚫 Скрыть из магазина', callback_data=f'admin:toggle_item:{item_id}')
     else:
         builder.button(text='✅ Добавить в магазин', callback_data=f'admin:toggle_item:{item_id}')
-    builder.button(text='🔢 Изменить остаток', callback_data=f'admin:set_stock:{item_id}')
-    builder.button(text='🎲 Изменить шанс лута', callback_data=f'admin:set_loot_chance:{item_id}')
+    builder.button(text='✏️ Название', callback_data=f'admin:edit_item:name:{item_id}')
+    builder.button(text='📝 Описание / свойства', callback_data=f'admin:edit_item:description:{item_id}')
+    builder.button(text='💰 Цена', callback_data=f'admin:edit_item:price:{item_id}')
+    builder.button(text='⭐ Редкость', callback_data=f'admin:edit_item_rarity:{item_id}')
+    builder.button(text='📂 Категория', callback_data=f'admin:edit_item_category:{item_id}')
+    builder.button(text='🖼️ Картинка', callback_data=f'admin:edit_item_photo:{item_id}')
+    builder.button(text='🔢 Остаток', callback_data=f'admin:set_stock:{item_id}')
+    builder.button(text='🎲 Шанс лута', callback_data=f'admin:set_loot_chance:{item_id}')
+    builder.button(text='🗑️ Удалить предмет', callback_data=f'admin:delete_item:{item_id}')
     builder.button(text='📦 Все предметы', callback_data='admin:items')
     builder.button(text='⬅️ Админ-панель', callback_data='admin:menu')
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def admin_delete_item_confirm_keyboard(item_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.button(text='Да, удалить', callback_data=f'admin:delete_item_confirm:{item_id}')
+    builder.button(text='Нет, вернуться к предмету', callback_data=f'admin:item:{item_id}')
     builder.adjust(1)
     return builder.as_markup()
 
@@ -143,7 +204,6 @@ def item_availability_keyboard() -> InlineKeyboardMarkup:
     builder.button(text='🎁 Только выдача игрокам', callback_data='item_availability:private')
     builder.adjust(1)
     return builder.as_markup()
-
 
 
 def transfer_menu() -> InlineKeyboardMarkup:
@@ -191,7 +251,7 @@ def quest_item_reward_keyboard(items: list[dict]) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.button(text='Без предмета', callback_data='quest_item:none')
     for item in items:
-        builder.button(text=f'{item["name"]} — {item["price"]} 🪙', callback_data=f'quest_item:{item["id"]}')
+        builder.button(text=f'{category_label(item.get("category"))} | {item["name"]} — {item["price"]} 🪙', callback_data=f'quest_item:{item["id"]}')
     builder.adjust(1)
     return builder.as_markup()
 

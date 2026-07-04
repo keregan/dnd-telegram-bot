@@ -9,11 +9,14 @@ from app.config import Settings
 from app.database import Database
 from app.handlers.common import is_admin
 from app.keyboards import (
+    admin_delete_item_confirm_keyboard,
     admin_item_manage_keyboard,
     admin_menu,
     back_to_admin_menu,
+    category_label,
     characters_keyboard,
     item_availability_keyboard,
+    item_category_keyboard,
     items_keyboard,
     quest_award_characters_keyboard,
     quest_details_keyboard,
@@ -30,6 +33,7 @@ from app.states import (
     CreateCharacterState,
     CreateItemState,
     CreateQuestState,
+    EditItemState,
     GiveItemState,
     SetItemLootChanceState,
     SetItemStockState,
@@ -57,6 +61,7 @@ def item_admin_text(item: dict) -> str:
         f'ID: <code>{item["id"]}</code>\n'
         f'Статус: <b>{status}</b>\n'
         f'Остаток в магазине: <b>{stock_label(item)}</b>\n'
+        f'Категория: <b>{category_label(item.get("category"))}</b>\n'
         f'Редкость: <b>{item["rarity"]}</b>\n'
         f'Цена продажи/покупки: <b>{item["price"]}</b> 🪙\n\n'
         f'{item["description"] or "Описание пока не добавлено."}'
@@ -261,8 +266,19 @@ async def create_item_description(message: Message, state: FSMContext, settings:
     if await deny_if_not_admin(message, settings):
         return
     await state.update_data(description=message.text.strip())
+    await state.set_state(CreateItemState.category)
+    await message.answer('Выбери категорию предмета:', reply_markup=item_category_keyboard('item_category', 'admin:menu'))
+
+
+@router.callback_query(CreateItemState.category, F.data.startswith('item_category:'))
+async def create_item_category(callback: CallbackQuery, state: FSMContext, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    category = callback.data.split(':', 1)[1]
+    await state.update_data(category=category)
     await state.set_state(CreateItemState.price)
-    await message.answer('Введи цену предмета в монетах. Эта цена используется и для покупки, и для продажи. Например: <code>10</code>')
+    await callback.message.answer('Введи цену предмета в монетах. Эта цена используется и для покупки, и для продажи. Например: <code>10</code>')
+    await callback.answer()
 
 
 @router.message(CreateItemState.price)
@@ -383,6 +399,7 @@ async def finish_item_creation(message: Message, state: FSMContext, db: Database
         description=data['description'],
         price=int(data['price']),
         rarity=data['rarity'],
+        category=data.get('category', 'other'),
         image_file_id=image_file_id,
         is_active=bool(data.get('is_active', True)),
         shop_quantity=int(data.get('shop_quantity', -1)),
@@ -397,6 +414,7 @@ async def finish_item_creation(message: Message, state: FSMContext, db: Database
         f'ID: <code>{item_id}</code>\n'
         f'Название: <b>{data["name"]}</b>\n'
         f'Цена: <b>{data["price"]}</b> 🪙\n'
+        f'Категория: <b>{category_label(data.get("category"))}</b>\n'
         f'Редкость: <b>{data["rarity"]}</b>\n'
         f'Доступность: <b>{availability}</b>\n'
         f'Остаток в магазине: <b>{stock_text}</b>',
@@ -414,7 +432,7 @@ async def admin_items(callback: CallbackQuery, db: Database, settings: Settings)
         await callback.answer()
         return
     text = '📦 <b>Все предметы</b>\n\n' + '\n'.join(
-        f'• #{item["id"]} {"✅" if item["is_active"] else "🚫"} <b>{item["name"]}</b> — '
+        f'• #{item["id"]} {"✅" if item["is_active"] else "🚫"} {category_label(item.get("category"))} | <b>{item["name"]}</b> — '
         f'{item["price"]} 🪙, {item["rarity"]}, остаток: {stock_label(item)}, лут: {item.get("loot_chance_percent", 0)}%'
         for item in items
     )
@@ -436,6 +454,201 @@ async def admin_item_details(callback: CallbackQuery, db: Database, settings: Se
         await callback.message.answer_photo(item['image_file_id'], caption=text, reply_markup=admin_item_manage_keyboard(item))
     else:
         await callback.message.answer(text, reply_markup=admin_item_manage_keyboard(item))
+    await callback.answer()
+
+
+
+EDIT_FIELD_LABELS = {
+    'name': 'название',
+    'description': 'описание / свойства',
+    'price': 'цену',
+}
+
+
+@router.callback_query(F.data.startswith('admin:edit_item:'))
+async def admin_edit_item_start(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    _, _, field, item_id_raw = callback.data.split(':')
+    if field not in EDIT_FIELD_LABELS:
+        await callback.answer('Это поле нельзя изменить через эту кнопку.', show_alert=True)
+        return
+    item_id = int(item_id_raw)
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет не найден.', show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(item_id=item_id, edit_field=field)
+    await state.set_state(EditItemState.value)
+    await callback.message.answer(f'Введи новое значение для поля <b>{EDIT_FIELD_LABELS[field]}</b> предмета <b>{item["name"]}</b>:')
+    await callback.answer()
+
+
+@router.message(EditItemState.value)
+async def admin_edit_item_value_finish(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(message, settings):
+        return
+    data = await state.get_data()
+    item_id = int(data['item_id'])
+    field = data['edit_field']
+    value = message.text.strip()
+    if field == 'name' and len(value) < 2:
+        await message.answer('Название слишком короткое. Введи новое название ещё раз:')
+        return
+    if field == 'price':
+        try:
+            value = int(value)
+        except ValueError:
+            await message.answer('Цена должна быть целым числом. Например: <code>10</code>')
+            return
+        if value < 0:
+            await message.answer('Цена не может быть отрицательной. Введи цену ещё раз:')
+            return
+    await db.update_item_field(item_id, field, value)
+    item = await db.get_item(item_id)
+    await state.clear()
+    await message.answer('Предмет обновлён ✅\n\n' + item_admin_text(item), reply_markup=admin_item_manage_keyboard(item))
+
+
+@router.callback_query(F.data.startswith('admin:edit_item_rarity:'))
+async def admin_edit_item_rarity_start(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    item_id = int(callback.data.split(':')[2])
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет не найден.', show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(item_id=item_id, edit_field='rarity')
+    await state.set_state(EditItemState.value)
+    await callback.message.answer(f'Выбери новую редкость для предмета <b>{item["name"]}</b>:', reply_markup=rarity_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(EditItemState.value, F.data.startswith('rarity:'))
+async def admin_edit_item_rarity_finish(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    data = await state.get_data()
+    if data.get('edit_field') != 'rarity':
+        return
+    item_id = int(data['item_id'])
+    rarity = callback.data.split(':', 1)[1]
+    await db.update_item_field(item_id, 'rarity', rarity)
+    item = await db.get_item(item_id)
+    await state.clear()
+    await callback.message.answer('Редкость обновлена ✅\n\n' + item_admin_text(item), reply_markup=admin_item_manage_keyboard(item))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('admin:edit_item_category:'))
+async def admin_edit_item_category_start(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    item_id = int(callback.data.split(':')[2])
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет не найден.', show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(item_id=item_id, edit_field='category')
+    await state.set_state(EditItemState.value)
+    await callback.message.answer(f'Выбери новую категорию для предмета <b>{item["name"]}</b>:', reply_markup=item_category_keyboard('edit_category', f'admin:item:{item_id}'))
+    await callback.answer()
+
+
+@router.callback_query(EditItemState.value, F.data.startswith('edit_category:'))
+async def admin_edit_item_category_finish(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    data = await state.get_data()
+    if data.get('edit_field') != 'category':
+        return
+    item_id = int(data['item_id'])
+    category = callback.data.split(':', 1)[1]
+    await db.update_item_field(item_id, 'category', category)
+    item = await db.get_item(item_id)
+    await state.clear()
+    await callback.message.answer('Категория обновлена ✅\n\n' + item_admin_text(item), reply_markup=admin_item_manage_keyboard(item))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('admin:edit_item_photo:'))
+async def admin_edit_item_photo_start(callback: CallbackQuery, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    item_id = int(callback.data.split(':')[2])
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет не найден.', show_alert=True)
+        return
+    await state.clear()
+    await state.update_data(item_id=item_id)
+    await state.set_state(EditItemState.photo)
+    await callback.message.answer('Отправь новую картинку одним фото. Если нужно убрать картинку — напиши /skip')
+    await callback.answer()
+
+
+@router.message(EditItemState.photo, Command('skip'))
+async def admin_edit_item_photo_clear(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(message, settings):
+        return
+    data = await state.get_data()
+    item_id = int(data['item_id'])
+    await db.update_item_field(item_id, 'image_file_id', None)
+    item = await db.get_item(item_id)
+    await state.clear()
+    await message.answer('Картинка удалена ✅\n\n' + item_admin_text(item), reply_markup=admin_item_manage_keyboard(item))
+
+
+@router.message(EditItemState.photo, F.photo)
+async def admin_edit_item_photo_finish(message: Message, state: FSMContext, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(message, settings):
+        return
+    data = await state.get_data()
+    item_id = int(data['item_id'])
+    image_file_id = message.photo[-1].file_id
+    await db.update_item_field(item_id, 'image_file_id', image_file_id)
+    item = await db.get_item(item_id)
+    await state.clear()
+    await message.answer('Картинка обновлена ✅\n\n' + item_admin_text(item), reply_markup=admin_item_manage_keyboard(item))
+
+
+@router.message(EditItemState.photo)
+async def admin_edit_item_photo_wrong(message: Message) -> None:
+    await message.answer('Нужно отправить картинку как фото или написать /skip.')
+
+
+@router.callback_query(F.data.startswith('admin:delete_item:'))
+async def admin_delete_item_start(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    item_id = int(callback.data.split(':')[2])
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет не найден.', show_alert=True)
+        return
+    await callback.message.answer(
+        f'Удалить предмет <b>{item["name"]}</b>?\n\n'
+        'Важно: предмет исчезнет из магазина и инвентарей игроков. Если он был наградой квеста, связь с квестом будет очищена.',
+        reply_markup=admin_delete_item_confirm_keyboard(item_id),
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith('admin:delete_item_confirm:'))
+async def admin_delete_item_finish(callback: CallbackQuery, db: Database, settings: Settings) -> None:
+    if await deny_if_not_admin(callback, settings):
+        return
+    item_id = int(callback.data.split(':')[2])
+    item = await db.get_item(item_id)
+    if item is None:
+        await callback.answer('Предмет уже удалён.', show_alert=True)
+        return
+    await db.delete_item(item_id)
+    await callback.message.answer(f'Предмет <b>{item["name"]}</b> удалён ✅', reply_markup=back_to_admin_menu())
     await callback.answer()
 
 

@@ -61,6 +61,7 @@ class Database:
                     description TEXT NOT NULL DEFAULT '',
                     price INTEGER NOT NULL DEFAULT 0,
                     rarity TEXT NOT NULL DEFAULT 'common',
+                    category TEXT NOT NULL DEFAULT 'other',
                     image_file_id TEXT,
                     is_active INTEGER NOT NULL DEFAULT 1,
                     shop_quantity INTEGER NOT NULL DEFAULT -1,
@@ -106,6 +107,7 @@ class Database:
             )
             await self._ensure_column(db, 'shop_items', 'shop_quantity', 'shop_quantity INTEGER NOT NULL DEFAULT -1')
             await self._ensure_column(db, 'shop_items', 'loot_chance_percent', 'loot_chance_percent INTEGER NOT NULL DEFAULT 0')
+            await self._ensure_column(db, 'shop_items', 'category', "category TEXT NOT NULL DEFAULT 'other'")
             await db.commit()
 
     async def create_character(self, login: str, password: str, display_name: str) -> int:
@@ -196,7 +198,8 @@ class Database:
         description: str,
         price: int,
         rarity: str,
-        image_file_id: str | None,
+        category: str = 'other',
+        image_file_id: str | None = None,
         is_active: bool = True,
         shop_quantity: int = UNLIMITED_STOCK,
         loot_chance_percent: int = 0,
@@ -204,14 +207,15 @@ class Database:
         async with self.connect() as db:
             cursor = await db.execute(
                 """
-                INSERT INTO shop_items(name, description, price, rarity, image_file_id, is_active, shop_quantity, loot_chance_percent, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO shop_items(name, description, price, rarity, category, image_file_id, is_active, shop_quantity, loot_chance_percent, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     name.strip(),
                     description.strip(),
                     max(0, price),
                     rarity.strip(),
+                    (category or 'other').strip(),
                     image_file_id,
                     1 if is_active else 0,
                     max(UNLIMITED_STOCK, shop_quantity),
@@ -240,22 +244,70 @@ class Database:
             )
             await db.commit()
 
+    async def update_item_field(self, item_id: int, field: str, value: Any) -> None:
+        allowed_fields = {'name', 'description', 'price', 'rarity', 'category', 'image_file_id'}
+        if field not in allowed_fields:
+            raise ValueError(f'Cannot edit item field: {field}')
+        if field == 'price':
+            value = max(0, int(value))
+        elif field == 'category':
+            value = (str(value).strip() or 'other')
+        elif field in {'name', 'description', 'rarity'}:
+            value = str(value).strip()
+        async with self.connect() as db:
+            await db.execute(f'UPDATE shop_items SET {field} = ? WHERE id = ?', (value, item_id))
+            await db.commit()
+
+    async def delete_item(self, item_id: int) -> None:
+        async with self.connect() as db:
+            await db.execute('DELETE FROM shop_items WHERE id = ?', (item_id,))
+            await db.commit()
+
+    async def list_item_categories(self, only_active: bool = True, only_purchasable: bool = False) -> list[str]:
+        conditions = []
+        params: list[Any] = []
+        if only_active or only_purchasable:
+            conditions.append('is_active = 1')
+        if only_purchasable:
+            conditions.append('shop_quantity != 0')
+        query = "SELECT DISTINCT COALESCE(category, 'other') AS category FROM shop_items"
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
+        query += ' ORDER BY category COLLATE NOCASE ASC'
+        async with self.connect() as db:
+            cursor = await db.execute(query, tuple(params))
+            rows = await cursor.fetchall()
+            return [row['category'] for row in rows]
+
     async def list_loot_items(self) -> list[dict[str, Any]]:
         async with self.connect() as db:
             cursor = await db.execute(
-                'SELECT * FROM shop_items WHERE loot_chance_percent > 0 ORDER BY loot_chance_percent DESC, name COLLATE NOCASE ASC'
+                'SELECT * FROM shop_items WHERE loot_chance_percent > 0 ORDER BY category COLLATE NOCASE ASC, loot_chance_percent DESC, name COLLATE NOCASE ASC'
             )
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
-    async def list_items(self, only_active: bool = True) -> list[dict[str, Any]]:
+    async def list_items(
+        self,
+        only_active: bool = True,
+        category: str | None = None,
+        only_purchasable: bool = False,
+    ) -> list[dict[str, Any]]:
         query = 'SELECT * FROM shop_items'
-        params: tuple[Any, ...] = ()
-        if only_active:
-            query += ' WHERE is_active = 1'
-        query += ' ORDER BY name COLLATE NOCASE ASC'
+        conditions: list[str] = []
+        params: list[Any] = []
+        if only_active or only_purchasable:
+            conditions.append('is_active = 1')
+        if only_purchasable:
+            conditions.append('shop_quantity != 0')
+        if category and category != 'all':
+            conditions.append("COALESCE(category, 'other') = ?")
+            params.append(category)
+        if conditions:
+            query += ' WHERE ' + ' AND '.join(conditions)
+        query += ' ORDER BY category COLLATE NOCASE ASC, name COLLATE NOCASE ASC'
         async with self.connect() as db:
-            cursor = await db.execute(query, params)
+            cursor = await db.execute(query, tuple(params))
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
@@ -303,7 +355,7 @@ class Database:
                 FROM inventory i
                 JOIN shop_items si ON si.id = i.item_id
                 WHERE i.character_id = ? AND i.quantity > 0
-                ORDER BY si.name COLLATE NOCASE ASC
+                ORDER BY si.category COLLATE NOCASE ASC, si.name COLLATE NOCASE ASC
                 """,
                 (character_id,),
             )
