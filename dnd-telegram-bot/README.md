@@ -138,7 +138,7 @@ CAMPAIGN_NAME=Моя DnD кампания
 Если администраторов несколько:
 
 ```env
-TELEGRAM_ADMIN_IDS=123456789,987654321
+TELEGRAM_ADMIN_IDS=telegram_id_1,telegram_id_2
 ```
 
 ### 5. Создай виртуальное окружение
@@ -683,24 +683,6 @@ git status
 - В проект добавлены 10 локальных изображений предметов в папку `assets/items/`.
 - Эти картинки автоматически привязываются к предметам при запуске бота.
 - Карточки предметов в магазине, инвентаре и админке теперь умеют отправлять как Telegram file_id, так и локальные картинки из проекта.
-
-## Как быстро обновить на сервере
-
-```bash
-cd /root
-unzip -o dnd-telegram-bot-v6-7.zip
-cd dnd-telegram-bot
-docker compose up -d --build
-```
-
-Если бот запускается не через Docker:
-
-```bash
-cd /root/dnd-telegram-bot
-pip install -r requirements.txt
-python -m app.main
-```
-
 
 ## Исправление v6-7
 
